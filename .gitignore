@@ -1,0 +1,9 @@
+# build output
+.build/
+build/
+# private notes (never published)
+HANDOFF.md
+CLAUDE.md
+# misc
+.DS_Store
+*.log
