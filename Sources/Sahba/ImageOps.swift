@@ -62,8 +62,13 @@ enum ImageOps {
         let (src, props) = try open(url)
         let t = compressedTarget(url, props: props)
         let out = Output.url(next: url, suffix: tr("مضغوط", "Compressed"), ext: t.ext)
-        if hasGainMap(src), try saveHDR(url, src: src, props: props, uti: t.uti, quality: quality, keepMetadata: true, to: out) { return out }
-        try encode(src, props: props, uti: t.uti, quality: quality, to: out)
+        // HDR gain maps add significant size (~1-2 MB) and don't compress well.
+        // For strong compression (quality < 0.7), drop HDR to achieve the target size.
+        // For light compression, keep HDR if possible.
+        if quality >= 0.7, hasGainMap(src), try saveHDR(url, src: src, props: props, uti: t.uti, quality: quality, keepMetadata: true, to: out) {
+            return out
+        }
+        try encodeCompressed(src, props: props, uti: t.uti, quality: quality, to: out)
         return out
     }
 
@@ -71,9 +76,32 @@ enum ImageOps {
     static func estimate(_ url: URL, quality: Double) -> Int? {
         guard let (src, props) = try? open(url) else { return nil }
         let t = compressedTarget(url, props: props)
+        
+        // Use the same logic as compress(): drop HDR for strong compression
+        if quality >= 0.7, hasGainMap(src), #available(macOS 15.0, *), gainMapFormats.contains(t.uti) {
+            // Estimate HDR size by encoding to memory
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("sahba-estimate-\(UUID().uuidString).\(t.ext)")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+            
+            guard (try? saveHDR(url, src: src, props: props, uti: t.uti, quality: quality, keepMetadata: true, to: tempURL)) != nil else {
+                // HDR encoding failed, fall back to standard estimate
+                return estimateStandard(src, props: props, uti: t.uti, quality: quality)
+            }
+            
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+               let size = attrs[.size] as? Int64 {
+                return Int(size)
+            }
+            return nil
+        }
+        
+        return estimateStandard(src, props: props, uti: t.uti, quality: quality)
+    }
+    
+    private static func estimateStandard(_ src: CGImageSource, props: [CFString: Any], uti: String, quality: Double) -> Int? {
         let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, t.uti as CFString, 1, nil) else { return nil }
-        add(src, props: props, uti: t.uti, quality: quality, to: dest)
+        guard let dest = CGImageDestinationCreateWithData(data, uti as CFString, 1, nil) else { return nil }
+        addCompressed(src, props: props, uti: uti, quality: quality, to: dest)
         return CGImageDestinationFinalize(dest) ? data.length : nil
     }
 
@@ -275,6 +303,18 @@ enum ImageOps {
         }
     }
 
+    /// Encode for compress operations: always re-encodes to apply quality, never uses the fast copy path.
+    private static func encodeCompressed(_ src: CGImageSource, props: [CFString: Any], uti: String, quality: Double, to out: URL) throws {
+        guard let dest = CGImageDestinationCreateWithURL(out as CFURL, uti as CFString, 1, nil) else {
+            throw OpError.unwritable
+        }
+        addCompressed(src, props: props, uti: uti, quality: quality, to: dest)
+        guard CGImageDestinationFinalize(dest) else {
+            try? FileManager.default.removeItem(at: out)
+            throw OpError.unwritable
+        }
+    }
+
     private static func add(_ src: CGImageSource, props: [CFString: Any], uti: String, quality: Double, to dest: CGImageDestination) {
         let orientation = (props[kCGImagePropertyOrientation] as? Int) ?? 1
         let flatten = uti == "public.jpeg" && ((props[kCGImagePropertyHasAlpha] as? Bool) ?? false)
@@ -285,6 +325,17 @@ enum ImageOps {
             return
         }
         // Bake the rotation into the pixels (PNG viewers often ignore the tag); JPG gets a white background.
+        guard var image = orientedImage(src, props: props) else { return }
+        if flatten, let flat = onWhite(image) { image = flat }
+        CGImageDestinationAddImage(dest, image, metadata(props, extra: q) as CFDictionary)
+    }
+
+    /// Add for compress operations: always decodes and re-encodes with quality, never uses the fast copy path.
+    /// This ensures that compression actually applies the quality setting instead of copying existing compressed data.
+    private static func addCompressed(_ src: CGImageSource, props: [CFString: Any], uti: String, quality: Double, to dest: CGImageDestination) {
+        let flatten = uti == "public.jpeg" && ((props[kCGImagePropertyHasAlpha] as? Bool) ?? false)
+        let q: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+        // Always decode to pixels and re-encode to ensure compression is applied.
         guard var image = orientedImage(src, props: props) else { return }
         if flatten, let flat = onWhite(image) { image = flat }
         CGImageDestinationAddImage(dest, image, metadata(props, extra: q) as CFDictionary)
