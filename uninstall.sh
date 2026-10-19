@@ -19,7 +19,7 @@ if [[ -z "${SAHBA_HOME:-}" ]]; then
   pkill -x Sahba 2>/dev/null || true
   for _ in $(seq 50); do pgrep -x Sahba >/dev/null 2>&1 || break; sleep 0.1; done
   defaults delete app.sahba.Sahba >/dev/null 2>&1 || true
-  rm -f "$HOME/Library/Logs/Sahba.log"
+  rm -f "$BASE/Library/Logs/Sahba.log"
 fi
 
 rm -rf "$APP" "$BASE/Library/Application Support/Sahba"

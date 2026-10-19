@@ -32,6 +32,10 @@ enum Actions {
         guard panel.runModal() == .OK, let dir = panel.url else { return }
         var moved = 0
         for url in urls {
+            if url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL {
+                moved += 1
+                continue
+            }
             let name = url.deletingPathExtension().lastPathComponent
             let dest = Output.unique(in: dir, base: name, ext: url.pathExtension)
             do {
@@ -216,7 +220,7 @@ final class TileView: NSView, NSDraggingSource {
 
     override func mouseDragged(with event: NSEvent) {
         let item = NSDraggingItem(pasteboardWriter: url as NSURL)
-        item.setDraggingFrame(NSRect(x: bounds.width - 40, y: 4, width: 32, height: 32), contents: icon)
+        item.setDraggingFrame(image.frame, contents: icon)
         beginDraggingSession(with: [item], event: event, source: self)
     }
 

@@ -153,12 +153,14 @@ final class HUD {
 
     /// A short confirmation, e.g. "انتسخ المسار".
     func flash(_ text: String, failed: Bool = false) {
-        var row = HUDModel.Row(title: text)
-        row.state = failed ? .failed : .done
-        row.visible = true
-        model.rows.append(row)
-        remove(row.id, after: 1.6)
-        refresh()
+        DispatchQueue.main.async { [self] in
+            var row = HUDModel.Row(title: text)
+            row.state = failed ? .failed : .done
+            row.visible = true
+            model.rows.append(row)
+            remove(row.id, after: 1.6)
+            refresh()
+        }
     }
 
     private func index(_ id: UUID) -> Int? { model.rows.firstIndex { $0.id == id } }

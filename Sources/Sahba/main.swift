@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         setUpStatusItem()
-        watcher.onShow = { [weak self] p, mode in self?.wheel.show(at: p, mode: mode) }
+        watcher.onShow = { [weak self] p, mode, urls in self?.wheel.show(at: p, mode: mode, files: urls) }
         watcher.onModeChange = { [weak self] mode in self?.wheel.setMode(mode) }
         watcher.onDragEnd = { [weak self] in self?.wheel.hideSoon() }
         Jobs.onOutputs = { [weak self] outputs in

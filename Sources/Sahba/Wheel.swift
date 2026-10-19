@@ -46,7 +46,7 @@ final class WheelController {
         return v
     }
 
-    func show(at p: NSPoint, mode: WheelMode) {
+    func show(at p: NSPoint, mode: WheelMode, files: [URL] = []) {
         generation += 1
         let size = WheelView.size, c = WheelView.center
         var frame = NSRect(x: p.x - c.x, y: p.y - c.y, width: size.width, height: size.height)
@@ -55,7 +55,7 @@ final class WheelController {
             frame.origin.x = min(max(frame.minX, s.minX), s.maxX - size.width)
             frame.origin.y = min(max(frame.minY, s.minY), s.maxY - size.height)
         }
-        wheel.reset(mode: mode)
+        wheel.reset(mode: mode, files: files)
         panel.setFrame(frame, display: true)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
@@ -151,16 +151,20 @@ final class WheelView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func reset(mode: WheelMode) {
+    func reset(mode: WheelMode, files: [URL] = []) {
         self.mode = mode
-        files = []
-        kind = nil
-        totalBytes = 0
-        items = []
-        lift = []
-        hovered = nil
-        reveal = 1
-        needsDisplay = true
+        if !files.isEmpty {
+            setFiles(files)
+        } else {
+            self.files = []
+            self.kind = nil
+            self.totalBytes = 0
+            self.items = []
+            self.lift = []
+            self.hovered = nil
+            self.reveal = 1
+            self.needsDisplay = true
+        }
     }
 
     func setMode(_ m: WheelMode) {

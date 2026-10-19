@@ -106,6 +106,8 @@ enum FF {
         }
         p.waitUntilExit()
         err.fileHandleForReading.readabilityHandler = nil
+        let trailingErr = err.fileHandleForReading.readDataToEndOfFile()
+        lock.lock(); errData.append(trailingErr); lock.unlock()
         if p.terminationStatus != 0, let software = softwareFallback(args) {
             // The Mac's video encoder isn't always there (seen on virtual M1 Macs with macOS 14): use x264/x265.
             Log.write("videotoolbox failed, retrying with the software encoder")
@@ -172,10 +174,10 @@ struct MediaTarget {
              "-loop", "0"]
         },
         MediaTarget(target: Target(label: "MP3", ext: "mp3")) { _ in
-            ["-vn", "-map", "0:a:0", "-c:a", "libmp3lame", "-q:a", "2"]
+            ["-vn", "-map", "0:a:0?", "-c:a", "libmp3lame", "-q:a", "2"]
         },
         MediaTarget(target: Target(label: "M4A", ext: "m4a")) { _ in
-            ["-vn", "-map", "0:a:0", "-c:a", "aac_at", "-b:a", "192k"]
+            ["-vn", "-map", "0:a:0?", "-c:a", "aac_at", "-b:a", "192k"]
         },
     ]
 
@@ -212,6 +214,9 @@ struct MediaTarget {
 enum MediaOps {
     static func convert(_ url: URL, to t: MediaTarget, progress: (Double) -> Void) throws -> URL {
         let info = FF.info(url)
+        if (t.target.ext == "mp3" || t.target.ext == "m4a") && info.acodec == nil {
+            throw OpError.failed(tr("الملف ما فيه صوت", "File has no audio track"))
+        }
         let out = Output.url(next: url, ext: t.target.ext)
         do {
             try FF.run(["-i", url.path] + t.args(info) + [out.path], duration: info.duration, progress: progress)
@@ -227,11 +232,16 @@ enum MediaOps {
         let info = FF.info(url)
         guard info.duration > 0 else { throw OpError.unreadable }
         let total = Double(Kinds.size(url)) * 8 * fraction / info.duration
-        let videoBits = max(150_000, total - 128_000)
+        let audioBits = (info.acodec != nil) ? 128_000.0 : 0.0
+        let videoBits = max(100_000, total - audioBits)
         let out = Output.url(next: url, suffix: tr("مضغوط", "Compressed"), ext: "mp4")
-        try FF.run(["-i", url.path, "-map", "0:v:0", "-map", "0:a?", "-c:v", "hevc_videotoolbox",
-                    "-b:v", String(Int(videoBits)), "-tag:v", "hvc1", "-c:a", "aac_at", "-b:a", "128k",
-                    "-movflags", "+faststart", out.path], duration: info.duration, progress: progress)
+        var args = ["-i", url.path, "-map", "0:v:0", "-map", "0:a?", "-c:v", "hevc_videotoolbox",
+                    "-b:v", String(Int(videoBits)), "-tag:v", "hvc1"]
+        if info.acodec != nil {
+            args += ["-c:a", "aac_at", "-b:a", "128k"]
+        }
+        args += ["-movflags", "+faststart", out.path]
+        try FF.run(args, duration: info.duration, progress: progress)
         return out
     }
 
@@ -285,35 +295,15 @@ enum MediaOps {
 
     private static let avTypes: [String: AVFileType] = ["mov": .mov, "mp4": .mp4, "m4v": .m4v]
 
-    /// Copies the video and audio tracks (not the camera's timed-metadata tracks) without re-encoding,
-    /// optionally with a new display rotation and with all file metadata removed.
-    private static func avRewrap(_ url: URL, to out: URL, extraRotation: CGFloat?, clearMetadata: Bool) throws {
+    /// Strips metadata via AVAssetExportPresetPassthrough directly on the original asset.
+    private static func avStripMetadata(_ url: URL, to out: URL) throws {
         guard let type = avTypes[Kinds.ext(url)] else { throw OpError.unreadable }
         let asset = AVURLAsset(url: url)
-        let comp = AVMutableComposition()
-        let range = CMTimeRange(start: .zero, duration: asset.duration)
-        for track in asset.tracks where track.mediaType == .video || track.mediaType == .audio {
-            guard let ct = comp.addMutableTrack(withMediaType: track.mediaType, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
-            try ct.insertTimeRange(range, of: track, at: .zero)
-            if track.mediaType == .video {
-                var t = track.preferredTransform
-                if let angle = extraRotation {
-                    t = t.concatenating(CGAffineTransform(rotationAngle: angle))
-                    let box = CGRect(origin: .zero, size: track.naturalSize).applying(t)
-                    t = t.concatenating(CGAffineTransform(translationX: -box.minX, y: -box.minY))
-                }
-                ct.preferredTransform = t
-            }
-        }
-        guard let session = AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetPassthrough) else { throw OpError.unreadable }
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else { throw OpError.unreadable }
         session.outputURL = out
         session.outputFileType = type
-        if clearMetadata {
-            session.metadata = []
-            session.metadataItemFilter = .forSharing()
-        } else {
-            session.metadata = asset.metadata
-        }
+        session.metadata = []
+        session.metadataItemFilter = .forSharing()
         let done = DispatchSemaphore(value: 0)
         session.exportAsynchronously { done.signal() }
         done.wait()
@@ -323,22 +313,54 @@ enum MediaOps {
         }
     }
 
-    /// Turns the video 90° clockwise by changing its display rotation (no re-encoding).
+    /// Re-encodes composition with rotated track transform when ffmpeg is unavailable.
+    private static func avRotate(_ url: URL, to out: URL, extraRotation: CGFloat) throws {
+        guard let type = avTypes[Kinds.ext(url)] else { throw OpError.unreadable }
+        let asset = AVURLAsset(url: url)
+        let comp = AVMutableComposition()
+        let range = CMTimeRange(start: .zero, duration: asset.duration)
+        for track in asset.tracks where track.mediaType == .video || track.mediaType == .audio {
+            guard let ct = comp.addMutableTrack(withMediaType: track.mediaType, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+            try ct.insertTimeRange(range, of: track, at: .zero)
+            if track.mediaType == .video {
+                var t = track.preferredTransform
+                t = t.concatenating(CGAffineTransform(rotationAngle: extraRotation))
+                let box = CGRect(origin: .zero, size: track.naturalSize).applying(t)
+                t = t.concatenating(CGAffineTransform(translationX: -box.minX, y: -box.minY))
+                ct.preferredTransform = t
+            }
+        }
+        guard let session = AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetHighestQuality) else { throw OpError.unreadable }
+        session.outputURL = out
+        session.outputFileType = type
+        let done = DispatchSemaphore(value: 0)
+        session.exportAsynchronously { done.signal() }
+        done.wait()
+        guard session.status == .completed else {
+            try? FileManager.default.removeItem(at: out)
+            throw OpError.failed(session.error?.localizedDescription ?? tr("ما زبط", "Failed"))
+        }
+    }
+
+    /// Turns the video 90° clockwise by changing its display rotation (lossless via ffmpeg, or high quality via AVFoundation).
     static func rotateVideo(_ url: URL) throws -> URL {
-        let avOut = Output.url(next: url, suffix: tr("مدوّر", "Rotated"), ext: Kinds.ext(url))
-        if (try? avRewrap(url, to: avOut, extraRotation: .pi / 2, clearMetadata: false)) != nil { return avOut }
+        let out = Output.url(next: url, suffix: tr("مدوّر", "Rotated"), ext: Kinds.ext(url))
         let info = FF.info(url)
         var angle = info.rotation - 90
         while angle <= -180 { angle += 360 }
-        let out = Output.url(next: url, suffix: tr("مدوّر", "Rotated"), ext: Kinds.ext(url))
-        try FF.run(["-display_rotation:v:0", String(Int(angle)), "-i", url.path, "-map", "0:v:0", "-map", "0:a?",
-                    "-c", "copy", out.path], duration: info.duration) { _ in }
+        while angle > 180 { angle -= 360 }
+        if FF.ffmpeg != nil {
+            try FF.run(["-display_rotation:v:0", String(Int(angle)), "-i", url.path, "-map", "0:v:0", "-map", "0:a?",
+                        "-c", "copy", "-metadata:s:v:0", "rotate=\(Int(angle))", out.path], duration: info.duration) { _ in }
+            return out
+        }
+        try avRotate(url, to: out, extraRotation: .pi / 2)
         return out
     }
 
     static func stripMetadata(_ url: URL, audioOnly: Bool) throws -> URL {
         let out = Output.url(next: url, suffix: tr("بدون بيانات", "No Metadata"), ext: Kinds.ext(url))
-        if !audioOnly, (try? avRewrap(url, to: out, extraRotation: nil, clearMetadata: true)) != nil { return out }
+        if !audioOnly, (try? avStripMetadata(url, to: out)) != nil { return out }
         let info = FF.info(url)
         let maps = audioOnly ? ["-map", "0:a"] : ["-map", "0:v:0", "-map", "0:a?"]
         try FF.run(["-i", url.path] + maps + ["-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact",

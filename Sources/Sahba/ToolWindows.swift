@@ -4,6 +4,7 @@ import SwiftUI
 /// Small windows for tools that need a choice first: compress, crop, trim.
 enum ToolWindows {
     private static var open: [NSWindow] = []
+    private final class TokenBox: @unchecked Sendable { var token: NSObjectProtocol? }
 
     @discardableResult
     static func present<V: View>(_ title: String, _ content: V) -> NSWindow {
@@ -18,8 +19,10 @@ enum ToolWindows {
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         open.append(w)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
+        let box = TokenBox()
+        box.token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
             open.removeAll { $0 === w }
+            if let t = box.token { NotificationCenter.default.removeObserver(t) }
         }
         return w
     }
@@ -174,7 +177,7 @@ struct CropView: View {
                 ForEach(ratios.indices, id: \.self) { Text(ratios[$0].0).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 360)
-            .onChange(of: model.ratioIndex) { _ in applyRatio() }
+            .onChange(of: model.ratioIndex) { applyRatio() }
             HStack {
                 Text(verbatim: "\(Int((model.rect.width * pw).rounded())) × \(Int((model.rect.height * ph).rounded())) \(tr("بكسل", "px"))")
                     .monospacedDigit().foregroundStyle(.secondary)
@@ -268,7 +271,11 @@ final class TrimModel: ObservableObject {
     @Published var start: Double = 0
     @Published var end: Double
     let player: AVPlayer
+    var boundaryObserver: Any?
     init(url: URL, duration: Double) { end = duration; player = AVPlayer(url: url) }
+    deinit {
+        if let obs = boundaryObserver { player.removeTimeObserver(obs) }
+    }
 }
 
 struct TrimView: View {
@@ -312,7 +319,13 @@ struct TrimView: View {
             }
         }
         .padding(22).padding(.top, 8)
-        .onDisappear { player.pause() }
+        .onDisappear {
+            if let obs = model.boundaryObserver {
+                player.removeTimeObserver(obs)
+                model.boundaryObserver = nil
+            }
+            player.pause()
+        }
     }
 
     private func seek(_ t: Double) {
@@ -320,12 +333,17 @@ struct TrimView: View {
     }
 
     private func preview() {
-        seek(model.start)
-        player.play()
-        let stopAt = model.end
-        DispatchQueue.main.asyncAfter(deadline: .now() + (model.end - model.start)) {
-            if CMTimeGetSeconds(player.currentTime()) >= stopAt - 0.3 { player.pause() }
+        if let obs = model.boundaryObserver {
+            player.removeTimeObserver(obs)
+            model.boundaryObserver = nil
         }
+        seek(model.start)
+        let stopTime = CMTime(seconds: model.end, preferredTimescale: 600)
+        let obs = player.addBoundaryTimeObserver(forTimes: [NSValue(time: stopTime)], queue: .main) { [weak player] in
+            player?.pause()
+        }
+        model.boundaryObserver = obs
+        player.play()
     }
 
     private func clock(_ t: Double) -> String {
