@@ -6,6 +6,7 @@ enum WheelMode: Int, CaseIterable {
 
     var title: String { [tr("تحويل", "Convert"), tr("أدوات", "Tools"), tr("إجراءات", "Actions")][rawValue] }
     var key: String { ["⇧", "⌘", "⌃"][rawValue] }
+    var symbol: String { ["arrow.triangle.2.circlepath", "slider.horizontal.3", "bolt.fill"][rawValue] }
 
     /// The wheels whose keys are down right now.
     static func held(_ flags: NSEvent.ModifierFlags) -> [WheelMode] {

@@ -4,6 +4,7 @@ import SwiftUI
 /// Small windows for tools that need a choice first: compress, crop, trim.
 enum ToolWindows {
     private static var open: [NSWindow] = []
+    private static var closeObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
 
     @discardableResult
     static func present<V: View>(_ title: String, _ content: V) -> NSWindow {
@@ -12,14 +13,21 @@ enum ToolWindows {
         w.title = title
         w.styleMask = [.titled, .closable, .fullSizeContentView]
         w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.standardWindowButton(.zoomButton)?.isHidden = true
+        w.standardWindowButton(.miniaturizeButton)?.isHidden = true
         w.isReleasedWhenClosed = false
         w.level = .floating
         w.center()
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         open.append(w)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
-            open.removeAll { $0 === w }
+        let id = ObjectIdentifier(w)
+        closeObservers[id] = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak w] _ in
+            if let w { open.removeAll { $0 === w } }
+            if let token = closeObservers.removeValue(forKey: id) {
+                NotificationCenter.default.removeObserver(token)
+            }
         }
         return w
     }
@@ -71,11 +79,24 @@ enum ToolWindows {
 private func sizeText(_ bytes: Int64) -> String { L10n.size(bytes) }
 
 private func header(_ symbol: String, _ title: String, _ detail: String) -> some View {
-    HStack(spacing: 12) {
-        Image(systemName: symbol).font(.system(size: 22, weight: .semibold)).foregroundStyle(Color.sahbaMint).frame(width: 30)
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 15, weight: .bold, design: .rounded)).lineLimit(1).truncationMode(.middle)
-            Text(detail).font(.system(size: 12)).foregroundStyle(.secondary)
+    HStack(spacing: 14) {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.sahbaAccent.opacity(0.15))
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Theme.sahbaAccent)
+        }
+        .frame(width: 38, height: 38)
+
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
     }
@@ -101,24 +122,47 @@ struct CompressView: View {
         VStack(alignment: .leading, spacing: 18) {
             header("arrow.down.right.and.arrow.up.left",
                    files.count == 1 ? files[0].lastPathComponent : tr("\(files.count) ملفات", "\(files.count) files"),
-                   tr("الحجم الحين: \(sizeText(original))", "Now: \(sizeText(original))"))
-            VStack(alignment: .leading, spacing: 6) {
-                Text(kind == .image ? tr("الجودة: \(Int(model.percent))٪", "Quality: \(Int(model.percent))%")
-                                     : tr("الحجم الجديد: \(Int(model.percent))٪ من الأصلي", "New size: \(Int(model.percent))% of the original"))
-                    .font(.system(size: 13, weight: .medium))
+                   tr("الحجم الحالي: \(sizeText(original))", "Current: \(sizeText(original))"))
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(kind == .image ? tr("الجودة:", "Quality:")
+                                         : tr("نسبة الحجم:", "Target size:"))
+                        .font(.system(size: 13, weight: .medium))
+                    Spacer()
+                    Text("\(Int(model.percent))%")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.sahbaAccent)
+                }
                 Slider(value: $model.percent, in: 10...90, step: 5)
+                    .tint(Theme.sahbaAccent)
             }
+
             HStack {
-                Text(tr("المتوقع:", "Expected:")).foregroundStyle(.secondary)
-                Text(model.estimate.map(sizeText) ?? "…").font(.system(size: 18, weight: .bold, design: .rounded)).monospacedDigit()
-            }
-            HStack {
+                Text(tr("المتوقع تقريباً:", "Estimated:")).foregroundStyle(.secondary).font(.system(size: 13, weight: .medium))
                 Spacer()
-                Button(tr("إلغاء", "Cancel")) { onDone(nil) }.keyboardShortcut(.cancelAction)
-                Button(tr("احفظ", "Save")) { onDone(model.percent / 100) }.keyboardShortcut(.defaultAction)
+                Text(model.estimate.map(sizeText) ?? "…")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.sahbaAccent)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            HStack(spacing: 12) {
+                Spacer()
+                Button(tr("إلغاء", "Cancel")) { onDone(nil) }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                Button(tr("احفظ", "Save")) { onDone(model.percent / 100) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.sahbaAccent)
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24).padding(.top, 8)
+        .padding(24).padding(.top, 14)
         .frame(width: 400)
         .task(id: model.percent) { await recompute() }
     }
@@ -174,17 +218,28 @@ struct CropView: View {
                 ForEach(ratios.indices, id: \.self) { Text(ratios[$0].0).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 360)
-            .onChange(of: model.ratioIndex) { _ in applyRatio() }
-            HStack {
+            .onChange(of: model.ratioIndex) { applyRatio() }
+            HStack(spacing: 12) {
                 Text(verbatim: "\(Int((model.rect.width * pw).rounded())) × \(Int((model.rect.height * ph).rounded())) \(tr("بكسل", "px"))")
-                    .monospacedDigit().foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Button(tr("رجّع", "Reset")) { model.rect = CGRect(x: 0, y: 0, width: 1, height: 1); model.ratioIndex = 0 }
-                Button(tr("إلغاء", "Cancel")) { onDone(nil) }.keyboardShortcut(.cancelAction)
-                Button(tr("احفظ", "Save")) { onDone(model.rect) }.keyboardShortcut(.defaultAction)
+                Button(tr("رجّع", "Reset")) {
+                    model.rect = CGRect(x: 0, y: 0, width: 1, height: 1)
+                    model.ratioIndex = 0
+                }
+                .buttonStyle(.bordered)
+                Button(tr("إلغاء", "Cancel")) { onDone(nil) }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                Button(tr("احفظ", "Save")) { onDone(model.rect) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.sahbaAccent)
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(22).padding(.top, 8)
+        .padding(22).padding(.top, 10)
     }
 
     private var canvas: some View {
@@ -197,20 +252,22 @@ struct CropView: View {
                 p.addRect(CGRect(origin: .zero, size: size))
                 p.addRect(r)
             }
-            .fill(Color.black.opacity(0.5), style: FillStyle(eoFill: true))
+            .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
             .allowsHitTesting(false)
-            Rectangle().strokeBorder(Color.sahbaMint, lineWidth: 2)
+            Rectangle().strokeBorder(Theme.sahbaAccent, lineWidth: 2)
                 .frame(width: r.width, height: r.height)
                 .contentShape(Rectangle())
                 .offset(x: r.minX, y: r.minY)
                 .gesture(moveGesture(size))
             ForEach(0..<4, id: \.self) { corner in
-                Circle().fill(Color.white).overlay(Circle().stroke(Color.sahbaMint, lineWidth: 2.5))
+                Circle().fill(Color.white).overlay(Circle().stroke(Theme.sahbaAccent, lineWidth: 2.5))
+                    .shadow(color: Color.black.opacity(0.25), radius: 3, x: 0, y: 1)
                     .frame(width: 18, height: 18)
                     .offset(x: (corner % 2 == 0 ? r.minX : r.maxX) - 9, y: (corner < 2 ? r.minY : r.maxY) - 9)
                     .gesture(cornerGesture(corner, size))
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .frame(width: size.width, height: size.height)
     }
 
@@ -268,7 +325,11 @@ final class TrimModel: ObservableObject {
     @Published var start: Double = 0
     @Published var end: Double
     let player: AVPlayer
+    var boundaryObserver: Any?
     init(url: URL, duration: Double) { end = duration; player = AVPlayer(url: url) }
+    deinit {
+        if let obs = boundaryObserver { player.removeTimeObserver(obs) }
+    }
 }
 
 struct TrimView: View {
@@ -304,15 +365,27 @@ struct TrimView: View {
                 .monospacedDigit().font(.system(size: 12)).frame(width: 560)
             }
             .environment(\.layoutDirection, .leftToRight)
-            HStack {
+            HStack(spacing: 12) {
                 Button { preview() } label: { Label(tr("شغّل المقطع", "Play selection"), systemImage: "play.fill") }
+                    .buttonStyle(.bordered)
                 Spacer()
-                Button(tr("إلغاء", "Cancel")) { player.pause(); onDone(nil) }.keyboardShortcut(.cancelAction)
-                Button(tr("احفظ", "Save")) { player.pause(); onDone((model.start, model.end)) }.keyboardShortcut(.defaultAction)
+                Button(tr("إلغاء", "Cancel")) { player.pause(); onDone(nil) }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                Button(tr("احفظ", "Save")) { player.pause(); onDone((model.start, model.end)) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.sahbaAccent)
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(22).padding(.top, 8)
-        .onDisappear { player.pause() }
+        .padding(22).padding(.top, 10)
+        .onDisappear {
+            if let obs = model.boundaryObserver {
+                player.removeTimeObserver(obs)
+                model.boundaryObserver = nil
+            }
+            player.pause()
+        }
     }
 
     private func seek(_ t: Double) {
@@ -320,12 +393,17 @@ struct TrimView: View {
     }
 
     private func preview() {
-        seek(model.start)
-        player.play()
-        let stopAt = model.end
-        DispatchQueue.main.asyncAfter(deadline: .now() + (model.end - model.start)) {
-            if CMTimeGetSeconds(player.currentTime()) >= stopAt - 0.3 { player.pause() }
+        if let obs = model.boundaryObserver {
+            player.removeTimeObserver(obs)
+            model.boundaryObserver = nil
         }
+        seek(model.start)
+        let stopTime = CMTime(seconds: model.end, preferredTimescale: 600)
+        let obs = player.addBoundaryTimeObserver(forTimes: [NSValue(time: stopTime)], queue: .main) { [weak player] in
+            player?.pause()
+        }
+        model.boundaryObserver = obs
+        player.play()
     }
 
     private func clock(_ t: Double) -> String {
@@ -358,8 +436,14 @@ struct RangeBar: View {
             let w = geo.size.width
             let x1 = CGFloat(start / duration) * w, x2 = CGFloat(end / duration) * w
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.25)).frame(height: 8)
-                Capsule().fill(Color.sahbaMint).frame(width: max(0, x2 - x1), height: 8).offset(x: x1)
+                Capsule().fill(Color.secondary.opacity(0.20)).frame(height: 8)
+                Capsule()
+                    .fill(
+                        LinearGradient(colors: [Theme.sahbaAccentHover, Theme.sahbaAccent],
+                                       startPoint: .leading, endPoint: .trailing)
+                    )
+                    .frame(width: max(0, x2 - x1), height: 8)
+                    .offset(x: x1)
                 handle.offset(x: x1 - 6).gesture(drag(w) { t in start = min(max(0, t), end - 0.2); onScrub(start) })
                 handle.offset(x: x2 - 6).gesture(drag(w) { t in end = max(min(duration, t), start + 0.2); onScrub(end) })
             }
@@ -369,9 +453,11 @@ struct RangeBar: View {
     }
 
     private var handle: some View {
-        RoundedRectangle(cornerRadius: 4).fill(Color.white)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.sahbaMint, lineWidth: 2.5))
-            .frame(width: 12, height: 32).shadow(radius: 1)
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(Color.white)
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Theme.sahbaAccent, lineWidth: 2.5))
+            .shadow(color: Color.black.opacity(0.30), radius: 3, x: 0, y: 1)
+            .frame(width: 12, height: 32)
     }
 
     private func drag(_ width: CGFloat, _ set: @escaping (Double) -> Void) -> some Gesture {

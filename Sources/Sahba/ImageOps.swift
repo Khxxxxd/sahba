@@ -96,7 +96,7 @@ enum ImageOps {
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         guard let rotated = ctx.makeImage() else { throw OpError.unwritable }
         let out = Output.url(next: url, suffix: tr("مدوّر", "Rotated"), ext: fmt.ext)
-        try write(rotated, uti: fmt.uti, props: props, to: out)
+        try write(rotated, uti: fmt.uti, props: props, swapDimensions: true, to: out)
         return out
     }
 
@@ -249,7 +249,7 @@ enum ImageOps {
             .hdrImage: hdr,
             CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality,
         ]
-        let space = CGColorSpace(name: CGColorSpace.displayP3)!
+        let space = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         let ctx = CIContext()
         if uti == "public.jpeg" {
             try ctx.writeJPEGRepresentation(of: sdr, to: out, colorSpace: space, options: options)
@@ -261,7 +261,7 @@ enum ImageOps {
 
     private static func rgbSpace(_ image: CGImage) -> CGColorSpace {
         if let s = image.colorSpace, s.model == .rgb { return s }
-        return CGColorSpace(name: CGColorSpace.sRGB)!
+        return CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     }
 
     private static func encode(_ src: CGImageSource, props: [CFString: Any], uti: String, quality: Double, to out: URL) throws {
@@ -290,20 +290,26 @@ enum ImageOps {
         CGImageDestinationAddImage(dest, image, metadata(props, extra: q) as CFDictionary)
     }
 
-    private static func write(_ image: CGImage, uti: String, props: [CFString: Any], to out: URL) throws {
+    private static func write(_ image: CGImage, uti: String, props: [CFString: Any], swapDimensions: Bool = false, to out: URL) throws {
         guard let dest = CGImageDestinationCreateWithURL(out as CFURL, uti as CFString, 1, nil) else {
             throw OpError.unwritable
         }
-        CGImageDestinationAddImage(dest, image, metadata(props, extra: [kCGImageDestinationLossyCompressionQuality: 0.92]) as CFDictionary)
+        CGImageDestinationAddImage(dest, image, metadata(props, extra: [kCGImageDestinationLossyCompressionQuality: 0.92], swapDimensions: swapDimensions) as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { throw OpError.unwritable }
     }
 
     /// The original metadata, minus the rotation tag (the pixels are already upright).
-    private static func metadata(_ props: [CFString: Any], extra: [CFString: Any]) -> [CFString: Any] {
+    private static func metadata(_ props: [CFString: Any], extra: [CFString: Any], swapDimensions: Bool = false) -> [CFString: Any] {
         var meta = extra
-        for key in [kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary, kCGImagePropertyIPTCDictionary,
-                    kCGImagePropertyDPIWidth, kCGImagePropertyDPIHeight] {
+        for key in [kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary, kCGImagePropertyIPTCDictionary] {
             if let v = props[key] { meta[key] = v }
+        }
+        if swapDimensions {
+            if let dpiW = props[kCGImagePropertyDPIWidth] { meta[kCGImagePropertyDPIHeight] = dpiW }
+            if let dpiH = props[kCGImagePropertyDPIHeight] { meta[kCGImagePropertyDPIWidth] = dpiH }
+        } else {
+            if let dpiW = props[kCGImagePropertyDPIWidth] { meta[kCGImagePropertyDPIWidth] = dpiW }
+            if let dpiH = props[kCGImagePropertyDPIHeight] { meta[kCGImagePropertyDPIHeight] = dpiH }
         }
         if var tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
             tiff[kCGImagePropertyTIFFOrientation] = 1

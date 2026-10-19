@@ -69,31 +69,83 @@ struct HUDView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(model.rows.filter(\.visible)) { row in
-                HStack(spacing: 10) {
-                    icon(row.state).frame(width: 20)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(row.title)
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .lineLimit(1).truncationMode(.middle)
-                            .frame(maxWidth: 260, alignment: .leading)
+                HStack(spacing: 12) {
+                    icon(row.state)
+                        .frame(width: 24, height: 24)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(row.title)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 240, alignment: .leading)
+
+                            if row.state == .running && row.progress > 0 {
+                                Spacer(minLength: 4)
+                                Text("\(Int(row.progress * 100))%")
+                                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.sahbaAccent)
+                            }
+                        }
+
                         if row.state == .running {
-                            ProgressView(value: row.progress).progressViewStyle(.linear).tint(Color.sahbaMint).frame(width: 220)
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.white.opacity(0.12))
+                                    .frame(width: 220, height: 5)
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(colors: [Theme.sahbaAccentHover, Theme.sahbaAccent],
+                                                       startPoint: .leading, endPoint: .trailing)
+                                    )
+                                    .frame(width: max(5, 220 * CGFloat(min(max(row.progress, 0), 1))), height: 5)
+                                    .animation(.spring(response: 0.25, dampingFraction: 0.8), value: row.progress)
+                            }
                         }
                     }
                 }
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            ZStack {
+                Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.85)
+                Rectangle().fill(.ultraThinMaterial)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(
+                    LinearGradient(colors: [Color.white.opacity(0.32), Color.white.opacity(0.08)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 6)
         .environment(\.layoutDirection, L10n.arabic ? .rightToLeft : .leftToRight)
         .fixedSize()
     }
 
     @ViewBuilder private func icon(_ state: HUDModel.State) -> some View {
         switch state {
-        case .running: ProgressView().controlSize(.small)
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.system(size: 18))
-        case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red).font(.system(size: 18))
+        case .running:
+            ProgressView()
+                .controlSize(.small)
+                .tint(Theme.sahbaAccent)
+        case .done:
+            Image(systemName: "checkmark.circle.fill")
+                .symbolRenderingMode(.multicolor)
+                .foregroundStyle(Color.green)
+                .font(.system(size: 20))
+        case .failed:
+            Image(systemName: "xmark.octagon.fill")
+                .symbolRenderingMode(.multicolor)
+                .foregroundStyle(Color.red)
+                .font(.system(size: 20))
         }
     }
 }
@@ -153,12 +205,15 @@ final class HUD {
 
     /// A short confirmation, e.g. "انتسخ المسار".
     func flash(_ text: String, failed: Bool = false) {
-        var row = HUDModel.Row(title: text)
-        row.state = failed ? .failed : .done
-        row.visible = true
-        model.rows.append(row)
-        remove(row.id, after: 1.6)
-        refresh()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            var row = HUDModel.Row(title: text)
+            row.state = failed ? .failed : .done
+            row.visible = true
+            self.model.rows.append(row)
+            self.remove(row.id, after: 1.6)
+            self.refresh()
+        }
     }
 
     private func index(_ id: UUID) -> Int? { model.rows.firstIndex { $0.id == id } }

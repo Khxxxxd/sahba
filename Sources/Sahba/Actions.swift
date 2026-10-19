@@ -32,6 +32,10 @@ enum Actions {
         guard panel.runModal() == .OK, let dir = panel.url else { return }
         var moved = 0
         for url in urls {
+            if url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL {
+                moved += 1
+                continue
+            }
             let name = url.deletingPathExtension().lastPathComponent
             let dest = Output.unique(in: dir, base: name, ext: url.pathExtension)
             do {
@@ -140,7 +144,9 @@ final class ShelfView: NSView {
         title.frame = NSRect(x: 40, y: 11, width: Self.width - 54, height: 16)
         addSubview(title)
 
-        let close = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: tr("سكّر", "Close"))!,
+        let closeImage = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: tr("سكّر", "Close"))
+            ?? NSImage(named: NSImage.stopProgressFreestandingTemplateName)
+        let close = NSButton(image: closeImage ?? NSImage(),
                              target: self, action: #selector(closeTapped))
         close.isBordered = false
         close.contentTintColor = .secondaryLabelColor
@@ -183,7 +189,10 @@ final class TileView: NSView, NSDraggingSource {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 10
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.25).cgColor
+        layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.08).cgColor
+        layer?.borderColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        layer?.borderWidth = 1.0
+
         let image = NSImageView(image: icon)
         image.frame = NSRect(x: 0, y: 0, width: 34, height: 34)
         image.autoresizingMask = [.minXMargin]
@@ -191,6 +200,7 @@ final class TileView: NSView, NSDraggingSource {
         let label = NSTextField(labelWithString: url.lastPathComponent)
         label.lineBreakMode = .byTruncatingMiddle
         label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = Theme.labelPrimary
         label.alignment = L10n.arabic ? .right : .left
         addSubview(label)
         self.label = label
@@ -199,8 +209,27 @@ final class TileView: NSView, NSDraggingSource {
 
     private var label: NSTextField!
     private var image: NSImageView!
+    private var trackingArea: NSTrackingArea?
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        self.trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+        layer?.borderColor = Theme.accentTop.withAlphaComponent(0.45).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.08).cgColor
+        layer?.borderColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+    }
 
     override func layout() {
         super.layout()
@@ -216,7 +245,7 @@ final class TileView: NSView, NSDraggingSource {
 
     override func mouseDragged(with event: NSEvent) {
         let item = NSDraggingItem(pasteboardWriter: url as NSURL)
-        item.setDraggingFrame(NSRect(x: bounds.width - 40, y: 4, width: 32, height: 32), contents: icon)
+        item.setDraggingFrame(image.frame, contents: icon)
         beginDraggingSession(with: [item], event: event, source: self)
     }
 
