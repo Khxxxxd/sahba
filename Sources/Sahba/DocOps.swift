@@ -31,19 +31,22 @@ enum DocOps {
     }
 
     private static func render(_ page: PDFPage, dpi: CGFloat) -> CGImage? {
-        let box = page.bounds(for: .mediaBox)
+        let boxChoice: PDFDisplayBox = page.bounds(for: .cropBox).isEmpty ? .mediaBox : .cropBox
+        let box = page.bounds(for: boxChoice)
         let quarterTurns = (page.rotation / 90) % 2 != 0
         let size = quarterTurns ? CGSize(width: box.height, height: box.width) : box.size
         // 300 DPI, but never more than 6000 px on a side (image-only PDFs can have giant pages).
         let scale = min(dpi / 72, 6000 / max(size.width, size.height, 1))
         let w = Int(size.width * scale), h = Int(size.height * scale)
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: space,
                                   bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.scaleBy(x: scale, y: scale)
-        page.draw(with: .mediaBox, to: ctx)
+        ctx.concatenate(page.transform(for: boxChoice))
+        page.draw(with: boxChoice, to: ctx)
         return ctx.makeImage()
     }
 
@@ -98,11 +101,18 @@ enum DocOps {
     }
 
     static func mergePDFs(_ urls: [URL]) throws -> URL {
-        guard let first = urls.first, let merged = PDFDocument(url: first) else { throw OpError.unreadable }
-        for url in urls.dropFirst() {
+        guard let first = urls.first else { throw OpError.unreadable }
+        let merged = PDFDocument()
+        for url in urls {
             guard let doc = PDFDocument(url: url) else { throw OpError.unreadable }
             for i in 0..<doc.pageCount {
-                if let page = doc.page(at: i) { merged.insert(page, at: merged.pageCount) }
+                if let page = doc.page(at: i) {
+                    if let pageCopy = page.copy() as? PDFPage {
+                        merged.insert(pageCopy, at: merged.pageCount)
+                    } else {
+                        merged.insert(page, at: merged.pageCount)
+                    }
+                }
             }
         }
         let out = Output.url(next: first, suffix: tr("مدموج", "Merged"), ext: "pdf")

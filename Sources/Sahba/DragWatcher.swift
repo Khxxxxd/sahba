@@ -7,7 +7,7 @@ import AppKit
 /// button state, keys and drag pasteboard are polled only while the button is down.
 /// Cmd on its own never opens the wheel, because Cmd-drag means "move" in Finder.
 final class DragWatcher {
-    var onShow: ((NSPoint, WheelMode) -> Void)?
+    var onShow: ((NSPoint, WheelMode, [URL]) -> Void)?
     var onModeChange: ((WheelMode) -> Void)?
     var onDragEnd: (() -> Void)?
 
@@ -19,6 +19,12 @@ final class DragWatcher {
     private var mode: WheelMode = .convert
     /// Wheels whose keys are held, oldest press first. The newest press picks the wheel.
     private var pressed: [WheelMode] = []
+    private var mouseDownLocation: NSPoint?
+
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        timer?.invalidate()
+    }
 
     func start() {
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged]) { [weak self] _ in
@@ -27,6 +33,9 @@ final class DragWatcher {
     }
 
     private func watch() {
+        if mouseDownLocation == nil {
+            mouseDownLocation = NSEvent.mouseLocation
+        }
         guard timer == nil else { return }
         let t = Timer(timeInterval: 1.0 / 40, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
@@ -38,6 +47,7 @@ final class DragWatcher {
         if NSEvent.pressedMouseButtons & 1 == 0 {
             timer?.invalidate()
             timer = nil
+            mouseDownLocation = nil
             idleCount = NSPasteboard(name: .drag).changeCount
             if shown {
                 shown = false
@@ -59,12 +69,18 @@ final class DragWatcher {
             return
         }
         guard flags.contains(.shift) || flags.contains(.control) else { return }
+        let loc = NSEvent.mouseLocation
+        if let origin = mouseDownLocation, hypot(loc.x - origin.x, loc.y - origin.y) < 3 {
+            return
+        }
         // A new drag writes to the drag pasteboard, so its change count moves.
         let pb = NSPasteboard(name: .drag)
         guard pb.changeCount != idleCount, pb.types?.contains(.fileURL) == true else { return }
+        let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return }
         shown = true
         pressed = held
         mode = held.last ?? .convert
-        onShow?(NSEvent.mouseLocation, mode)
+        onShow?(loc, mode, urls)
     }
 }

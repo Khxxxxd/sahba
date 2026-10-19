@@ -71,6 +71,14 @@ install_tool() { # name sha256
     ok "$name already installed"
     return 0
   fi
+  for sys_bin in "/opt/homebrew/bin/$name" "/usr/local/bin/$name"; do
+    if [[ -x "$sys_bin" ]]; then
+      mkdir -p "$BIN"
+      ln -sf "$sys_bin" "$BIN/$name"
+      ok "$name found at $sys_bin (using system copy)"
+      return 0
+    fi
+  done
   say "downloading $name ..."
   fetch "$FF_URL/$name.zip" "$TMP/$name.zip"
   [[ "$(sha_of "$TMP/$name.zip")" == "$sha" ]] || fail "$name did not match its expected fingerprint."

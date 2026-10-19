@@ -16,6 +16,17 @@ enum FileKind: String {
         case .other: return "folder"
         }
     }
+
+    var symbol: String {
+        switch self {
+        case .image: return "photo.stack.fill"
+        case .video: return "film.stack.fill"
+        case .audio: return "waveform"
+        case .pdf: return "doc.text.fill"
+        case .document: return "doc.richtext.fill"
+        case .other: return "sparkles"
+        }
+    }
 }
 
 enum Kinds {
@@ -40,6 +51,7 @@ enum Kinds {
         guard let t = type(url), !t.conforms(to: .folder), !t.conforms(to: .volume) else { return .other }
         if videoExts.contains(ext(url)) { return .video }
         if audioExts.contains(ext(url)) { return .audio }
+        if ext(url) == "svg" || t.conforms(to: .svg) { return .other }
         if t.conforms(to: .pdf) { return .pdf }
         if t.conforms(to: .image) { return .image }
         if t.conforms(to: .audio) { return .audio }
